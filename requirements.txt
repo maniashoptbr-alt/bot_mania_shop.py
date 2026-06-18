@@ -2,3 +2,4 @@ discord.py
 pyotp
 Pillow
 flask
+gunicorn
