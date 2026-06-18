@@ -40,27 +40,38 @@ def salvar_json(arq, dados):
 produtos_disponiveis = carregar_json("produtos.json", {})
 estoque_disponivel = carregar_json("estoque.json", {})
 
-# --- LÓGICA PIX COPIA E COLA (ESTÁTICO) ---
-def gerar_pix_copia_e_cola(valor, chave, nome_recebedor="Mania Shop", cidade="SAO PAULO"):
-    def f(id, conteudo): return f"{id}{len(conteudo):02}{conteudo}"
+# --- LÓGICA PIX COPIA E COLA (PADRÃO OFICIAL) ---
+def gerar_pix_br_code(valor, chave):
+    def f(id, val): return f"{id}{len(str(val)):02}{val}"
+    
+    # Merchant Account Information (ID 26)
     gui = f("00", "BR.GOV.BCB.PIX")
     key = f("01", chave)
     merchant_info = f("26", gui + key)
-    payload = [
-        f("00", "01"), f("52", "0000"), f("53", "986"), f("54", f"{valor:.2f}"),
-        f("58", "BR"), f("59", nome_recebedor[:25]), f("60", cidade[:15]),
-        f("62", f("05", "MANIASHOP")),
-    ]
-    pix_string = "".join(payload) + merchant_info + "6304" # Ajuste na ordem do merchant_info para padrão
-    # Re-montagem simplificada para compatibilidade máxima
-    pix_string = f"00020126330014BR.GOV.BCB.PIX01{len(chave):02}{chave}52040000530398654{len(f'{valor:.2f}'):02}{valor:.2f}5802BR59{len(nome_recebedor):02}{nome_recebedor}60{len(cidade):02}{cidade}62090505MANIA6304"
     
+    # Montagem do Payload
+    payload = [
+        f("00", "01"),          # Format Indicator
+        merchant_info,          # Merchant Info
+        f("52", "0000"),        # Category Code
+        f("53", "986"),         # Currency (BRL)
+        f("54", f"{valor:.2f}"),# Amount
+        f("58", "BR"),          # Country
+        f("59", "MANIA SHOP"),  # Name
+        f("60", "SAO PAULO"),   # City
+        f("62", f("05", "MANIA")), # Info Adicional
+    ]
+    
+    pix_string = "".join(payload) + "6304"
+    
+    # Cálculo CRC16
     crc = 0xFFFF
     for char in pix_string:
         crc ^= (ord(char) << 8)
         for _ in range(8):
             if crc & 0x8000: crc = (crc << 1) ^ 0x1021
             else: crc <<= 1
+    
     return pix_string + f"{crc & 0xFFFF:04X}"
 
 # --- CONTROLE DE SPAM ---
@@ -166,18 +177,24 @@ class ConfirmarPagamentoView(discord.ui.View):
             await canal.send(content=f"<@{MEU_ID}>", embed=emb, view=ConfirmarEntregaView(interaction.user.id, self.prod_nome, self.pag_id, self.var))
 
 async def fluxo_pagamento(interaction, prod_id, nome, preco, var=None):
-    # --- TRAVA DE ESTOQUE ---
     qtd = verificar_estoque(prod_id, var)
     if qtd <= 0:
-        return await (interaction.followup.send if interaction.response.is_done() else interaction.response.send_message)("❌ **Sinto muito!** Este produto acabou de esgotar. Aguarde a reposição.", ephemeral=True)
+        return await (interaction.followup.send if interaction.response.is_done() else interaction.response.send_message)("❌ **Sinto muito!** Este produto esgotou.", ephemeral=True)
 
     pag_id = f"{prod_id}_{interaction.user.id}_{int(time.time())}"
-    pix_string = gerar_pix_copia_e_cola(preco, PIX_EMAIL)
-    qr = qrcode.make(pix_string); buf = BytesIO(); qr.save(buf, format="PNG"); buf.seek(0)
+    pix_string = gerar_pix_br_code(preco, PIX_EMAIL)
+    
+    # Gerar QR Code Imagem
+    qr = qrcode.QRCode(version=1, box_size=10, border=5)
+    qr.add_data(pix_string)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
     
     emb = discord.Embed(title="💳 FINALIZAR PAGAMENTO", description=f"Produto: **{nome}**", color=0x8A05BE)
     emb.add_field(name="💰 Valor", value=f"```R$ {preco:.2f}```")
     emb.set_image(url="attachment://qrcode.png")
+    emb.set_footer(text="Escaneie o QR Code ou use o botão 'Copiar PIX'.")
     
     view = ConfirmarPagamentoView(nome, preco, pag_id, pix_string, var)
     try:
@@ -228,33 +245,18 @@ async def ver_indices(interaction: discord.Interaction, id: str):
     for i, it in enumerate(e.get("itens", [])): txt += f"`{i}` - `{it}`\n"
     await interaction.response.send_message(txt[:2000], ephemeral=True)
 
-@bot.tree.command(name="remover_variacao")
-async def remover_variacao(interaction: discord.Interaction, id: str, indice: int):
-    if interaction.user.id != MEU_ID: return
-    if id in produtos_disponiveis and 0 <= indice < len(produtos_disponiveis[id]["variacoes"]):
-        produtos_disponiveis[id]["variacoes"].pop(indice); salvar_json("produtos.json", produtos_disponiveis)
-        await interaction.response.send_message("✅ Removida.", ephemeral=True)
-
 @bot.tree.command(name="configurar_loja")
 async def configurar_loja(interaction: discord.Interaction, id: str):
     if interaction.user.id != MEU_ID: return
     p = produtos_disponiveis.get(id)
     if not p: return
     qtd = verificar_estoque(id)
-    cor = 0xffa500 if qtd > 0 else 0xff0000
-    txt_estoque = f"{qtd} un." if qtd > 0 else "ESGOTADO"
-    emb = discord.Embed(title=f"⚡ {p['nome']}", description=p['descricao'].replace("|", "\n"), color=cor)
+    emb = discord.Embed(title=f"⚡ {p['nome']}", description=p['descricao'].replace("|", "\n"), color=0xffa500 if qtd > 0 else 0xff0000)
     emb.add_field(name="💰 Valor", value=f"R$ {p['preco']:.2f}", inline=True)
-    emb.add_field(name="📦 Estoque", value=txt_estoque, inline=True)
+    emb.add_field(name="📦 Estoque", value=f"{qtd} un." if qtd > 0 else "ESGOTADO", inline=True)
     if p.get("imagem"): emb.set_image(url=p["imagem"])
     await interaction.channel.send(embed=emb, view=ProdutoView(id, p['nome'], p.get('variacoes')))
     await interaction.response.send_message("✅ OK!", ephemeral=True)
-
-@bot.tree.command(name="configurar_2fa")
-async def configurar_2fa(interaction: discord.Interaction):
-    if interaction.user.id != MEU_ID: return
-    emb = discord.Embed(title="🔐 GERADOR 2FA", description="Clique abaixo para gerar seu código.", color=0x00ff88)
-    await interaction.channel.send(embed=emb, view=Gerador2FAView()); await interaction.response.send_message("✅ OK!", ephemeral=True)
 
 @bot.tree.command(name="add_estoque")
 async def add_estoque(interaction: discord.Interaction, id: str, itens: str, variacao: str = None):
@@ -285,6 +287,12 @@ async def set_imagem(interaction: discord.Interaction, id: str, url: str):
 async def sincronizar(interaction: discord.Interaction):
     if interaction.user.id != MEU_ID: return
     await bot.tree.sync(); await interaction.response.send_message("✅ OK!", ephemeral=True)
+
+@bot.tree.command(name="configurar_2fa")
+async def configurar_2fa(interaction: discord.Interaction):
+    if interaction.user.id != MEU_ID: return
+    emb = discord.Embed(title="🔐 GERADOR 2FA", description="Clique abaixo para gerar seu código.", color=0x00ff88)
+    await interaction.channel.send(embed=emb, view=Gerador2FAView()); await interaction.response.send_message("✅ OK!", ephemeral=True)
 
 # --- EXECUÇÃO ---
 if __name__ == "__main__":
