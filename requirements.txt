@@ -1,3 +1,4 @@
 discord.py
 pyotp
 Pillow
+flask
