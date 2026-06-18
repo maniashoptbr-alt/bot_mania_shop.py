@@ -9,25 +9,23 @@ import pyotp
 from flask import Flask
 
 # ===============================
-# MINI SERVIDOR PARA O RENDER NÃO DAR FAILED
+# SERVIDOR WEB PARA O RENDER
 # ===============================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot Mania Shop Online!"
+    return "Mania Shop Online!"
 
-def run():
-    # O Render usa a porta 10000 por padrão
+def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-def keep_alive():
-    t = threading.Thread(target=run)
-    t.start()
+# Inicia o Flask em uma thread separada IMEDIATAMENTE
+threading.Thread(target=run_flask, daemon=True).start()
 
 # ===============================
-# CONFIG E BOT
+# CONFIGURAÇÕES DO BOT
 # ===============================
 print("🔧 Iniciando bot Mania Shop...")
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
@@ -203,6 +201,7 @@ async def gerar_2fa(interaction: discord.Interaction, chave: str):
 # INÍCIO
 # ===============================
 if __name__ == "__main__":
-    keep_alive() # Inicia o servidor Flask em paralelo
-    if not DISCORD_TOKEN: print("❌ Sem Token")
-    else: bot.run(DISCORD_TOKEN)
+    if not DISCORD_TOKEN: 
+        print("❌ Sem Token")
+    else: 
+        bot.run(DISCORD_TOKEN)
