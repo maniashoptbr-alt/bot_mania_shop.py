@@ -1,46 +1,52 @@
 import discord
 from discord import app_commands
 import threading
-import asyncio
 import os
-import sys
 import time
-import base64
 import json
 from datetime import datetime
-from io import BytesIO
 import pyotp
+from flask import Flask
 
+# ===============================
+# MINI SERVIDOR PARA O RENDER NÃO DAR FAILED
+# ===============================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot Mania Shop Online!"
+
+def run():
+    # O Render usa a porta 10000 por padrão
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = threading.Thread(target=run)
+    t.start()
+
+# ===============================
+# CONFIG E BOT
+# ===============================
 print("🔧 Iniciando bot Mania Shop...")
-
-# ===============================
-# CONFIG
-# ===============================
 DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
-
 ARQUIVO_PRODUTOS_JSON = "produtos.json"
 ARQUIVO_ESTOQUE_JSON = "estoque.json"
-ARQUIVO_PAGAMENTOS_PROCESSADOS = "pagamentos.json"
 
-# IDs do Servidor Novo (Mania Shop)
-MEU_ID = 1516951987868925983 # ID USUARIO DONO
-CANAL_CARRINHOS = 1516955638930870365 # CARRINHOS ATIVOS
-CANAL_PAGOS = 1516955638930870366 # PAGAMENTOS CONFIRMADOS
-
+MEU_ID = 1516951987868925983
+CANAL_CARRINHOS = 1516955638930870365
+CANAL_PAGOS = 1516955638930870366
 PIX_EMAIL = "maniashoptbr@gmail.com"
 NOME_LOJA = "Mania Shop"
 
-# ===============================
-# SISTEMA DE PERSISTÊNCIA
-# ===============================
-
+# --- PERSISTÊNCIA ---
 def carregar_json(arquivo, default):
     if os.path.exists(arquivo):
         try:
             with open(arquivo, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
-            return default
+        except: return default
     return default
 
 def salvar_json(arquivo, dados):
@@ -50,44 +56,29 @@ def salvar_json(arquivo, dados):
 estoque_disponivel = carregar_json(ARQUIVO_ESTOQUE_JSON, {})
 produtos_disponiveis = carregar_json(ARQUIVO_PRODUTOS_JSON, {})
 
-def salvar_estoque():
-    salvar_json(ARQUIVO_ESTOQUE_JSON, estoque_disponivel)
+def salvar_estoque(): salvar_json(ARQUIVO_ESTOQUE_JSON, estoque_disponivel)
+def salvar_produtos(): salvar_json(ARQUIVO_PRODUTOS_JSON, produtos_disponiveis)
 
-def salvar_produtos():
-    salvar_json(ARQUIVO_PRODUTOS_JSON, produtos_disponiveis)
-
-# ===============================
-# LÓGICA DE ESTOQUE
-# ===============================
+# --- ESTOQUE ---
 estoque_lock = threading.Lock()
 
-def verificar_estoque(produto_id, variacao_nome=None):
+def verificar_estoque(produto_id, var=None):
     with estoque_lock:
-        if produto_id not in estoque_disponivel:
-            return 0
-        if variacao_nome:
-            return len(estoque_disponivel[produto_id].get("variacoes", {}).get(variacao_nome, []))
+        if produto_id not in estoque_disponivel: return 0
+        if var: return len(estoque_disponivel[produto_id].get("variacoes", {}).get(var, []))
         return len(estoque_disponivel[produto_id].get("itens", []))
 
-def entregar_do_estoque(produto_id, variacao_nome=None):
+def entregar_do_estoque(produto_id, var=None):
     with estoque_lock:
-        if produto_id not in estoque_disponivel:
-            return None
-        
-        if variacao_nome:
-            lista = estoque_disponivel[produto_id].get("variacoes", {}).get(variacao_nome, [])
-        else:
-            lista = estoque_disponivel[produto_id].get("itens", [])
-            
+        if produto_id not in estoque_disponivel: return None
+        lista = estoque_disponivel[produto_id].get("variacoes", {}).get(var, []) if var else estoque_disponivel[produto_id].get("itens", [])
         if lista:
             item = lista.pop(0)
             salvar_estoque()
             return item
         return None
 
-# ===============================
-# DISCORD BOT SETUP
-# ===============================
+# --- DISCORD ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -96,231 +87,122 @@ class ManiaBot(discord.Client):
     def __init__(self):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
-
     async def setup_hook(self):
         await self.tree.sync()
         print("✅ Slash commands sincronizados")
-
     async def on_ready(self):
         print(f"🟢 {NOME_LOJA} logado como {self.user}")
 
 bot = ManiaBot()
 
-# ===============================
-# VIEWS E INTERAÇÕES
-# ===============================
-
+# --- VIEWS ---
 class ConfirmarEntregaView(discord.ui.View):
-    def __init__(self, cliente_id, produto_nome, valor, pagamento_id, variacao=None):
+    def __init__(self, cliente_id, prod_nome, valor, pag_id, var=None):
         super().__init__(timeout=None)
-        self.cliente_id = cliente_id
-        self.produto_nome = produto_nome
-        self.valor = valor
-        self.pagamento_id = pagamento_id
-        self.variacao = variacao
+        self.cliente_id, self.prod_nome, self.valor, self.pag_id, self.var = cliente_id, prod_nome, valor, pag_id, var
 
     @discord.ui.button(label="✅ Confirmar Entrega", style=discord.ButtonStyle.success)
     async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != MEU_ID:
-            await interaction.response.send_message("❌ Apenas o dono pode confirmar.", ephemeral=True)
-            return
-
+        if interaction.user.id != MEU_ID: return
         await interaction.response.defer()
-        produto_id = self.pagamento_id.split('_')[0]
-        item = entregar_do_estoque(produto_id, self.variacao)
-        
+        item = entregar_do_estoque(self.pag_id.split('_')[0], self.var)
         cliente = await bot.fetch_user(self.cliente_id)
-        embed_cliente = discord.Embed(title="🎁 SEU PRODUTO CHEGOU!", color=0x00ff88)
-        embed_cliente.add_field(name="📦 Produto", value=self.produto_nome)
-        
-        if item:
-            embed_cliente.add_field(name="🔐 Conteúdo", value=f"```{item}```", inline=False)
-        else:
-            embed_cliente.add_field(name="⚠️ Nota", value="Entrega confirmada manualmente pelo dono.", inline=False)
-        
         try:
-            await cliente.send(embed=embed_cliente)
-        except:
-            pass
-
-        canal_pagos = bot.get_channel(CANAL_PAGOS)
-        if canal_pagos:
-            embed_log = discord.Embed(title="✅ ENTREGA REALIZADA", color=0x00ff88)
-            embed_log.add_field(name="Cliente", value=f"<@{self.cliente_id}>")
-            embed_log.add_field(name="Produto", value=self.produto_nome)
-            await canal_pagos.send(embed=embed_log)
-
-        for item_view in self.children:
-            item_view.disabled = True
+            emb = discord.Embed(title="🎁 SEU PRODUTO CHEGOU!", color=0x00ff88)
+            emb.add_field(name="📦 Produto", value=self.prod_nome)
+            emb.add_field(name="🔐 Conteúdo", value=f"```{item if item else 'Confirmado manualmente.'}```", inline=False)
+            await cliente.send(embed=emb)
+        except: pass
+        canal = bot.get_channel(CANAL_PAGOS)
+        if canal: await canal.send(embed=discord.Embed(title="✅ ENTREGA REALIZADA", description=f"Cliente: <@{self.cliente_id}>\nProduto: {self.prod_nome}", color=0x00ff88))
+        for child in self.children: child.disabled = True
         await interaction.edit_original_response(content="✅ Entrega confirmada!", view=self)
 
-class ConfirmarPagamentoClienteView(discord.ui.View):
-    def __init__(self, produto_nome, valor, pagamento_id, variacao=None):
+class ConfirmarPagamentoView(discord.ui.View):
+    def __init__(self, prod_nome, valor, pag_id, var=None):
         super().__init__(timeout=None)
-        self.produto_nome = produto_nome
-        self.valor = valor
-        self.pagamento_id = pagamento_id
-        self.variacao = variacao
+        self.prod_nome, self.valor, self.pag_id, self.var = prod_nome, valor, pag_id, var
 
     @discord.ui.button(label="💰 Já realizei o pagamento", style=discord.ButtonStyle.primary)
     async def confirmou(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("✅ Dono notificado! Aguarde a entrega.", ephemeral=True)
-        
-        canal_carrinhos = bot.get_channel(CANAL_CARRINHOS)
-        if canal_carrinhos:
-            embed = discord.Embed(title="🔔 PAGAMENTO REIVINDICADO", color=0xffaa00)
-            embed.add_field(name="Cliente", value=interaction.user.mention)
-            embed.add_field(name="Produto", value=self.produto_nome)
-            embed.add_field(name="Valor", value=f"R$ {self.valor:.2f}")
-            
-            view_entrega = ConfirmarEntregaView(interaction.user.id, self.produto_nome, self.valor, self.pagamento_id, self.variacao)
-            await canal_carrinhos.send(content=f"<@{MEU_ID}>", embed=embed, view=view_entrega)
-        
+        await interaction.response.send_message("✅ Dono notificado!", ephemeral=True)
+        canal = bot.get_channel(CANAL_CARRINHOS)
+        if canal:
+            emb = discord.Embed(title="🔔 PAGAMENTO REIVINDICADO", color=0xffaa00)
+            emb.add_field(name="Cliente", value=interaction.user.mention)
+            emb.add_field(name="Produto", value=self.prod_nome)
+            emb.add_field(name="Valor", value=f"R$ {self.valor:.2f}")
+            await canal.send(content=f"<@{MEU_ID}>", embed=emb, view=ConfirmarEntregaView(interaction.user.id, self.prod_nome, self.valor, self.pag_id, self.var))
         button.disabled = True
         await interaction.edit_original_response(view=self)
 
-# ===============================
-# COMANDOS DE COMPRA
-# ===============================
-
-class VariacoesView(discord.ui.View):
-    def __init__(self, produto_id, produto_nome, variacoes):
-        super().__init__(timeout=None)
-        for var in variacoes:
-            self.add_item(VariacaoButton(produto_id, produto_nome, var))
-
-class VariacaoButton(discord.ui.Button):
-    def __init__(self, produto_id, produto_nome, var_info):
-        super().__init__(label=f"{var_info['nome']} - R$ {var_info['preco']:.2f}", style=discord.ButtonStyle.secondary)
-        self.produto_id = produto_id
-        self.produto_nome = produto_nome
-        self.var_nome = var_info['nome']
-        self.preco = var_info['preco']
-
-    async def callback(self, interaction: discord.Interaction):
-        await gerar_fluxo_pagamento(interaction, self.produto_id, f"{self.produto_nome} ({self.var_nome})", self.preco, self.var_nome)
-
-async def gerar_fluxo_pagamento(interaction, produto_id, nome_completo, preco, variacao=None):
-    pagamento_id = f"{produto_id}_{interaction.user.id}_{int(time.time())}"
-    
-    embed = discord.Embed(
-        title="💸 PAGAMENTO PIX",
-        description=f"Produto: **{nome_completo}**\n\n"
-                    f"🔑 **Chave PIX:** `{PIX_EMAIL}`\n"
-                    f"💰 **Valor:** `R$ {preco:.2f}`\n\n"
-                    f"1. Pague o valor exato.\n"
-                    f"2. Clique no botão abaixo após pagar.",
-        color=0x8A05BE
-    )
-    
-    view = ConfirmarPagamentoClienteView(nome_completo, preco, pagamento_id, variacao)
-    
+async def gerar_pagamento(interaction, prod_id, nome, preco, var=None):
+    pag_id = f"{prod_id}_{interaction.user.id}_{int(time.time())}"
+    emb = discord.Embed(title="💸 PAGAMENTO PIX", description=f"**{nome}**\n\n🔑 Chave: `{PIX_EMAIL}`\n💰 Valor: `R$ {preco:.2f}`", color=0x8A05BE)
     try:
-        await interaction.user.send(embed=embed, view=view)
-        if interaction.response.is_done():
-            await interaction.followup.send("✅ Instruções enviadas no privado!", ephemeral=True)
-        else:
-            await interaction.response.send_message("✅ Instruções enviadas no privado!", ephemeral=True)
+        await interaction.user.send(embed=emb, view=ConfirmarPagamentoView(nome, preco, pag_id, var))
+        await (interaction.followup.send if interaction.response.is_done() else interaction.response.send_message)("✅ Instruções na DM!", ephemeral=True)
     except:
-        if interaction.response.is_done():
-            await interaction.followup.send("❌ DM fechada!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ DM fechada!", ephemeral=True)
+        await (interaction.followup.send if interaction.response.is_done() else interaction.response.send_message)("❌ DM fechada!", ephemeral=True)
 
-class ProdutoCompraView(discord.ui.View):
-    def __init__(self, produto_id, produto_nome, variacoes=None):
+class ProdutoView(discord.ui.View):
+    def __init__(self, prod_id, nome, vars=None):
         super().__init__(timeout=None)
-        self.produto_id = produto_id
-        self.produto_nome = produto_nome
-        self.variacoes = variacoes or []
-
-    @discord.ui.button(label="🛒 Comprar", style=discord.ButtonStyle.success, custom_id="btn_comprar_mania")
+        self.prod_id, self.nome, self.vars = prod_id, nome, vars or []
+    @discord.ui.button(label="🛒 Comprar", style=discord.ButtonStyle.success, custom_id="btn_buy")
     async def comprar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        produto_info = produtos_disponiveis.get(self.produto_id)
-        if not produto_info:
-            await interaction.response.send_message("❌ Produto não encontrado.", ephemeral=True)
-            return
+        info = produtos_disponiveis.get(self.prod_id)
+        if not info: return
+        if self.vars:
+            v = discord.ui.View()
+            for var in self.vars:
+                btn = discord.ui.Button(label=f"{var['nome']} - R$ {var['preco']:.2f}")
+                async def cb(i, p=var['preco'], n=var['nome']): await gerar_pagamento(i, self.prod_id, f"{self.nome} ({n})", p, n)
+                btn.callback = cb
+                v.add_item(btn)
+            await interaction.response.send_message("Escolha:", view=v, ephemeral=True)
+        else: await gerar_pagamento(interaction, self.prod_id, self.nome, info['preco'])
 
-        if self.variacoes:
-            view = VariacoesView(self.produto_id, self.produto_nome, self.variacoes)
-            await interaction.response.send_message("Escolha uma opção:", view=view, ephemeral=True)
-        else:
-            await gerar_fluxo_pagamento(interaction, self.produto_id, self.produto_nome, produto_info['preco'])
-
-# ===============================
-# COMANDOS ADMINISTRATIVOS
-# ===============================
-
-@bot.tree.command(name="criar_produto", description="[ADMIN] Criar um novo produto")
+# --- COMANDOS ADMIN ---
+@bot.tree.command(name="criar_produto")
 async def criar_produto(interaction: discord.Interaction, id: str, nome: str, preco: float, descricao: str):
-    if interaction.user.id != MEU_ID:
-        await interaction.response.send_message("Apenas o dono!", ephemeral=True)
-        return
-    
-    produtos_disponiveis[id] = {
-        "nome": nome,
-        "preco": preco,
-        "descricao": descricao,
-        "imagem": "",
-        "variacoes": []
-    }
+    if interaction.user.id != MEU_ID: return
+    produtos_disponiveis[id] = {"nome": nome, "preco": preco, "descricao": descricao, "variacoes": []}
     salvar_produtos()
-    await interaction.response.send_message(f"✅ Produto `{nome}` criado!", ephemeral=True)
+    await interaction.response.send_message(f"✅ Criado: {nome}", ephemeral=True)
 
-@bot.tree.command(name="configurar_loja", description="[ADMIN] Envia o embed de venda")
+@bot.tree.command(name="configurar_loja")
 async def configurar_loja(interaction: discord.Interaction, produto_id: str):
-    if interaction.user.id != MEU_ID:
-        await interaction.response.send_message("Apenas o dono!", ephemeral=True)
-        return
-    
-    produto = produtos_disponiveis.get(produto_id)
-    if not produto:
-        await interaction.response.send_message("ID não encontrado.", ephemeral=True)
-        return
-    
-    embed = discord.Embed(title=f"⚡ {produto['nome']}", description=produto['descricao'], color=0xffa500)
-    embed.add_field(name="💰 Valor", value=f"R$ {produto['preco']:.2f}")
-    if produto.get('imagem'):
-        embed.set_image(url=produto['imagem'])
-    
-    view = ProdutoCompraView(produto_id, produto['nome'], produto.get('variacoes'))
-    await interaction.channel.send(embed=embed, view=view)
-    await interaction.response.send_message("✅ Loja configurada!", ephemeral=True)
+    if interaction.user.id != MEU_ID: return
+    p = produtos_disponiveis.get(produto_id)
+    if not p: return
+    emb = discord.Embed(title=f"⚡ {p['nome']}", description=p['descricao'], color=0xffa500)
+    emb.add_field(name="💰 Valor", value=f"R$ {p['preco']:.2f}")
+    await interaction.channel.send(embed=emb, view=ProdutoView(produto_id, p['nome'], p.get('variacoes')))
+    await interaction.response.send_message("✅ Loja OK!", ephemeral=True)
 
-@bot.tree.command(name="add_estoque", description="[ADMIN] Adicionar itens")
+@bot.tree.command(name="add_estoque")
 async def add_estoque(interaction: discord.Interaction, produto_id: str, itens: str, variacao: str = None):
-    if interaction.user.id != MEU_ID:
-        return
-    
+    if interaction.user.id != MEU_ID: return
     novos = [i.strip() for i in itens.split("|") if i.strip()]
-    if produto_id not in estoque_disponivel:
-        estoque_disponivel[produto_id] = {"itens": [], "variacoes": {}}
-    
+    if produto_id not in estoque_disponivel: estoque_disponivel[produto_id] = {"itens": [], "variacoes": {}}
     if variacao:
-        if "variacoes" not in estoque_disponivel[produto_id]:
-            estoque_disponivel[produto_id]["variacoes"] = {}
-        if variacao not in estoque_disponivel[produto_id]["variacoes"]:
-            estoque_disponivel[produto_id]["variacoes"][variacao] = []
+        if "variacoes" not in estoque_disponivel[produto_id]: estoque_disponivel[produto_id]["variacoes"] = {}
+        if variacao not in estoque_disponivel[produto_id]["variacoes"]: estoque_disponivel[produto_id]["variacoes"][variacao] = []
         estoque_disponivel[produto_id]["variacoes"][variacao].extend(novos)
-    else:
-        estoque_disponivel[produto_id]["itens"].extend(novos)
-    
+    else: estoque_disponivel[produto_id]["itens"].extend(novos)
     salvar_estoque()
-    await interaction.response.send_message(f"✅ Adicionado {len(novos)} itens.", ephemeral=True)
+    await interaction.response.send_message(f"✅ +{len(novos)} itens", ephemeral=True)
 
-@bot.tree.command(name="gerar_2fa", description="Gerar código 2FA")
+@bot.tree.command(name="gerar_2fa")
 async def gerar_2fa(interaction: discord.Interaction, chave: str):
-    try:
-        totp = pyotp.TOTP(chave.strip().upper().replace(" ", ""))
-        await interaction.response.send_message(f"🔐 Seu código: `{totp.now()}`", ephemeral=True)
-    except:
-        await interaction.response.send_message("❌ Chave inválida.", ephemeral=True)
+    try: await interaction.response.send_message(f"🔐 Código: `{pyotp.TOTP(chave.strip().upper().replace(' ','')).now()}`", ephemeral=True)
+    except: await interaction.response.send_message("❌ Erro", ephemeral=True)
 
 # ===============================
-# START
+# INÍCIO
 # ===============================
 if __name__ == "__main__":
-    if not DISCORD_TOKEN:
-        print("❌ Erro: DISCORD_TOKEN não configurado.")
-    else:
-        bot.run(DISCORD_TOKEN)
+    keep_alive() # Inicia o servidor Flask em paralelo
+    if not DISCORD_TOKEN: print("❌ Sem Token")
+    else: bot.run(DISCORD_TOKEN)
