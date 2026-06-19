@@ -93,7 +93,25 @@ class ManiaBot(discord.Client):
 
 bot = ManiaBot()
 
-# --- VIEWS ---
+# --- VIEWS E MODALS ---
+
+class Modal2FA(discord.ui.Modal, title="Gerador de Código 2FA"):
+    chave = discord.ui.TextInput(label="Cole sua chave 2FA aqui", placeholder="Ex: JBSWY3DPEHPK3PXP", required=True)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            totp = pyotp.TOTP(self.chave.value.strip().upper().replace(" ", ""))
+            emb = discord.Embed(title="🔐 Autenticação 2FA", color=0x00ff88)
+            emb.add_field(name="Código Atual", value=f"```\n{totp.now()}\n```", inline=False)
+            emb.add_field(name="Expira em", value=f"{30 - (int(time.time()) % 30)} segundos")
+            await interaction.response.send_message(embed=emb, ephemeral=True)
+        except: await interaction.response.send_message("❌ Chave inválida!", ephemeral=True)
+
+class Gerador2FAView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="Gerar Código 2FA", style=discord.ButtonStyle.success, emoji="🔐")
+    async def gerar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(Modal2FA())
+
 class ConfirmarEntregaView(discord.ui.View):
     def __init__(self, cliente_id, prod_nome, pag_id, var=None):
         super().__init__(timeout=None)
@@ -171,10 +189,20 @@ class ProdutoView(discord.ui.View):
 @bot.tree.command(name="criar_produto")
 async def criar_produto(interaction: discord.Interaction, id: str, nome: str, preco: float, descricao: str):
     if interaction.user.id != MEU_ID: return
-    # A barra reta | agora vira quebra de linha \n
     desc_formatada = descricao.replace("|", "\n")
     produtos_disponiveis[id] = {"nome": nome, "preco": preco, "descricao": desc_formatada, "imagem": "", "variacoes": []}
     salvar_json("produtos.json", produtos_disponiveis); await interaction.response.send_message(f"✅ `{nome}` criado!", ephemeral=True)
+
+@bot.tree.command(name="excluir_produto")
+async def excluir_produto(interaction: discord.Interaction, id: str):
+    if interaction.user.id != MEU_ID: return
+    if id in produtos_disponiveis:
+        del produtos_disponiveis[id]
+        if id in estoque_disponivel: del estoque_disponivel[id]
+        salvar_json("produtos.json", produtos_disponiveis)
+        salvar_json("estoque.json", estoque_disponivel)
+        await interaction.response.send_message(f"🗑️ Produto `{id}` excluído com sucesso!", ephemeral=True)
+    else: await interaction.response.send_message("❌ ID não encontrado.", ephemeral=True)
 
 @bot.tree.command(name="ver_indices")
 async def ver_indices(interaction: discord.Interaction, id: str):
@@ -244,8 +272,9 @@ async def sincronizar(interaction: discord.Interaction):
 @bot.tree.command(name="configurar_2fa")
 async def configurar_2fa(interaction: discord.Interaction):
     if interaction.user.id != MEU_ID: return
-    emb = discord.Embed(title="🔐 GERADOR 2FA", description="Clique abaixo para gerar seu código.", color=0x00ff88)
-    await interaction.channel.send(embed=emb, view=Gerador2FAView()); await interaction.response.send_message("✅ OK!", ephemeral=True)
+    emb = discord.Embed(title="🔐 GERADOR 2FA", description="Clique abaixo para gerar seu código de acesso.", color=0x00ff88)
+    await interaction.channel.send(embed=emb, view=Gerador2FAView())
+    await interaction.response.send_message("✅ Painel 2FA enviado!", ephemeral=True)
 
 # --- EXECUÇÃO ---
 if __name__ == "__main__":
