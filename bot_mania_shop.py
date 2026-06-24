@@ -69,6 +69,23 @@ def verificar_estoque(prod_id, var=None):
         if var: return len(estoque_disponivel.get(prod_id, {}).get("variacoes", {}).get(var, []))
         return len(estoque_disponivel.get(prod_id, {}).get("itens", []))
 
+def contar_estoque_detalhado(prod_id):
+    """Retorna contagem detalhada do estoque"""
+    if prod_id not in estoque_disponivel:
+        return {"total": 0, "itens": 0, "variacoes": {}}
+    
+    total = 0
+    itens = len(estoque_disponivel[prod_id].get("itens", []))
+    total += itens
+    
+    variacoes = {}
+    for var_nome, var_itens in estoque_disponivel[prod_id].get("variacoes", {}).items():
+        qtd = len(var_itens)
+        variacoes[var_nome] = qtd
+        total += qtd
+    
+    return {"total": total, "itens": itens, "variacoes": variacoes}
+
 def entregar_do_estoque(prod_id, var=None):
     with estoque_lock:
         if prod_id not in estoque_disponivel: return None
@@ -226,6 +243,128 @@ async def remover_item_estoque(interaction: discord.Interaction, id: str, indice
         rem = lista.pop(indice); salvar_json("estoque.json", estoque_disponivel)
         await interaction.response.send_message(f"🗑️ Removido: `{rem}`", ephemeral=True)
     else: await interaction.response.send_message("❌ Índice inválido.", ephemeral=True)
+
+# NOVO COMANDO: Sincronizar produto em canal específico
+@bot.tree.command(name="sincronizar_canal")
+async def sincronizar_canal(interaction: discord.Interaction, id: str, canal: discord.TextChannel):
+    """
+    Sincroniza um produto em um canal específico
+    Exemplo: /sincronizar_canal id:produto1 canal:#vendas
+    """
+    if interaction.user.id != MEU_ID:
+        await interaction.response.send_message("❌ Apenas o dono pode usar este comando!", ephemeral=True)
+        return
+    
+    p = produtos_disponiveis.get(id)
+    if not p:
+        await interaction.response.send_message(f"❌ Produto com ID `{id}` não encontrado!", ephemeral=True)
+        return
+    
+    qtd = verificar_estoque(id)
+    estoque_detalhado = contar_estoque_detalhado(id)
+    
+    # Cria embed do produto
+    emb = discord.Embed(
+        title=f"⚡ {p['nome']}", 
+        description=p['descricao'], 
+        color=0xffa500 if qtd > 0 else 0xff0000
+    )
+    emb.add_field(name="💰 Valor", value=f"R$ {p['preco']:.2f}", inline=True)
+    emb.add_field(name="📦 Estoque", value=f"{qtd} un." if qtd > 0 else "ESGOTADO", inline=True)
+    
+    # Mostra detalhes do estoque
+    detalhes_estoque = f"Total: {estoque_detalhado['total']} itens\n"
+    detalhes_estoque += f"Gerais: {estoque_detalhado['itens']} itens\n"
+    if estoque_detalhado['variacoes']:
+        detalhes_estoque += "Variações:\n"
+        for var, qtd_var in estoque_detalhado['variacoes'].items():
+            detalhes_estoque += f"  • {var}: {qtd_var} itens\n"
+    emb.add_field(name="📊 Detalhes do Estoque", value=detalhes_estoque, inline=False)
+    
+    if p.get("imagem"): 
+        emb.set_image(url=p["imagem"])
+    
+    emb.set_footer(text=f"📌 Produto sincronizado em {canal.name} • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    
+    # Envia para o canal escolhido
+    try:
+        await canal.send(embed=emb, view=ProdutoView(id, p['nome'], p.get('variacoes')))
+        await interaction.response.send_message(
+            f"✅ Produto `{p['nome']}` sincronizado com sucesso no canal {canal.mention}!\n"
+            f"📦 Estoque disponível: {qtd} itens",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Erro ao enviar para o canal: {str(e)}", ephemeral=True)
+
+# NOVO COMANDO: Sincronizar e mostrar contagem real do estoque
+@bot.tree.command(name="sincronizar_estoque")
+async def sincronizar_estoque(interaction: discord.Interaction, id: str):
+    """
+    Sincroniza e mostra a contagem real do estoque de um produto
+    Exemplo: /sincronizar_estoque id:produto1
+    """
+    if interaction.user.id != MEU_ID:
+        await interaction.response.send_message("❌ Apenas o dono pode usar este comando!", ephemeral=True)
+        return
+    
+    if id not in produtos_disponiveis:
+        await interaction.response.send_message(f"❌ Produto com ID `{id}` não encontrado!", ephemeral=True)
+        return
+    
+    # Recarrega os dados do estoque
+    global estoque_disponivel
+    estoque_disponivel = carregar_json("estoque.json", {})
+    
+    p = produtos_disponiveis[id]
+    qtd = verificar_estoque(id)
+    estoque_detalhado = contar_estoque_detalhado(id)
+    
+    # Cria embed com informações detalhadas
+    emb = discord.Embed(
+        title="📊 SINCRONIZAÇÃO DE ESTOQUE",
+        description=f"Contagem real do produto: **{p['nome']}**",
+        color=0x00ff88
+    )
+    
+    emb.add_field(
+        name="📦 Status Geral",
+        value=f"✅ Estoque sincronizado\n"
+              f"🆔 ID: `{id}`\n"
+              f"💰 Preço: R$ {p['preco']:.2f}",
+        inline=False
+    )
+    
+    # Mostra contagem detalhada
+    emb.add_field(
+        name="📊 Contagem Real",
+        value=f"**Total de itens:** {estoque_detalhado['total']}\n"
+              f"**Itens gerais:** {estoque_detalhado['itens']}\n"
+              f"**Variações:** {len(estoque_detalhado['variacoes'])}",
+        inline=False
+    )
+    
+    # Mostra cada variação
+    if estoque_detalhado['variacoes']:
+        vars_text = ""
+        for var, qtd_var in estoque_detalhado['variacoes'].items():
+            vars_text += f"• **{var}:** {qtd_var} itens\n"
+        emb.add_field(name="🎨 Variações Disponíveis", value=vars_text, inline=False)
+    
+    # Mostra os itens específicos
+    if id in estoque_disponivel:
+        itens_text = ""
+        itens_gerais = estoque_disponivel[id].get("itens", [])
+        if itens_gerais:
+            for i, item in enumerate(itens_gerais[:5]):  # Mostra até 5 itens
+                itens_text += f"`{i+1}.` {item}\n"
+            if len(itens_gerais) > 5:
+                itens_text += f"... e mais {len(itens_gerais) - 5} itens"
+            emb.add_field(name="📋 Primeiros Itens do Estoque", value=itens_text or "Nenhum item listado", inline=False)
+    
+    emb.set_footer(text=f"Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    
+    await interaction.response.send_message(embed=emb, ephemeral=True)
 
 @bot.tree.command(name="configurar_loja")
 async def configurar_loja(interaction: discord.Interaction, id: str):
