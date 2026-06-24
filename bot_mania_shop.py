@@ -93,7 +93,7 @@ class ManiaBot(discord.Client):
 
 bot = ManiaBot()
 
-# --- VIEWS E MODALS ---
+# --- VIEWS E MODAIS ---
 
 class Modal2FA(discord.ui.Modal, title="Gerador de Código 2FA"):
     chave = discord.ui.TextInput(label="Cole sua chave 2FA aqui", placeholder="Ex: JBSWY3DPEHPK3PXP", required=True)
@@ -186,6 +186,7 @@ class ProdutoView(discord.ui.View):
         else: await fluxo_pagamento(interaction, self.prod_id, self.nome, p['preco'])
 
 # --- COMANDOS ADMIN ---
+
 @bot.tree.command(name="criar_produto")
 async def criar_produto(interaction: discord.Interaction, id: str, nome: str, preco: float, descricao: str):
     if interaction.user.id != MEU_ID: return
@@ -275,6 +276,92 @@ async def configurar_2fa(interaction: discord.Interaction):
     emb = discord.Embed(title="🔐 GERADOR 2FA", description="Clique abaixo para gerar seu código de acesso.", color=0x00ff88)
     await interaction.channel.send(embed=emb, view=Gerador2FAView())
     await interaction.response.send_message("✅ Painel 2FA enviado!", ephemeral=True)
+
+@bot.tree.command(name="atualizar_produto")
+async def atualizar_produto(interaction: discord.Interaction, id: str, novo_nome: str = None, novo_preco: float = None, nova_descricao: str = None):
+    """
+    Atualiza as informações de um produto existente mantendo o estoque
+    """
+    if interaction.user.id != MEU_ID:
+        await interaction.response.send_message("❌ Apenas o dono pode usar este comando!", ephemeral=True)
+        return
+    
+    if id not in produtos_disponiveis:
+        await interaction.response.send_message(f"❌ Produto com ID `{id}` não encontrado!", ephemeral=True)
+        return
+    
+    if not any([novo_nome, novo_preco is not None, nova_descricao]):
+        await interaction.response.send_message(
+            "❌ Você precisa fornecer pelo menos um campo para atualizar!\n"
+            "Exemplo: `/atualizar_produto id:produto1 novo_nome:'Novo Nome'`",
+            ephemeral=True
+        )
+        return
+    
+    produto = produtos_disponiveis[id]
+    atualizacoes = []
+    
+    if novo_nome:
+        produto["nome"] = novo_nome
+        atualizacoes.append(f"📝 Nome: `{novo_nome}`")
+    
+    if novo_preco is not None:
+        produto["preco"] = novo_preco
+        atualizacoes.append(f"💰 Preço: `R$ {novo_preco:.2f}`")
+    
+    if nova_descricao:
+        desc_formatada = nova_descricao.replace("|", "\n")
+        produto["descricao"] = desc_formatada
+        preview = nova_descricao[:50] + "..." if len(nova_descricao) > 50 else nova_descricao
+        atualizacoes.append(f"📄 Descrição: `{preview}`")
+    
+    salvar_json("produtos.json", produtos_disponiveis)
+    
+    qtd_estoque = verificar_estoque(id)
+    qtd_variacoes = len(produto.get("variacoes", []))
+    
+    emb = discord.Embed(
+        title="✅ PRODUTO ATUALIZADO COM SUCESSO!",
+        description=f"Produto `{id}` atualizado com sucesso!",
+        color=0x00ff88
+    )
+    
+    if atualizacoes:
+        emb.add_field(
+            name="📋 Alterações realizadas:",
+            value="\n".join(atualizacoes),
+            inline=False
+        )
+    
+    emb.add_field(
+        name="📦 Status do Estoque:",
+        value=f"• Itens disponíveis: `{qtd_estoque}`\n"
+              f"• Variações: `{qtd_variacoes}`\n"
+              f"• ID do produto: `{id}`",
+        inline=False
+    )
+    
+    emb.add_field(
+        name="📦 Dados completos do produto:",
+        value=f"**Nome:** {produto['nome']}\n"
+              f"**Preço:** R$ {produto['preco']:.2f}\n"
+              f"**Descrição:** {produto['descricao'][:100]}{'...' if len(produto['descricao']) > 100 else ''}",
+        inline=False
+    )
+    
+    if produto.get("variacoes"):
+        vars_text = ""
+        for v in produto["variacoes"]:
+            vars_text += f"• {v['nome']} - R$ {v['preco']:.2f}\n"
+        emb.add_field(
+            name="🎨 Variações disponíveis:",
+            value=vars_text or "Nenhuma variação cadastrada",
+            inline=False
+        )
+    
+    emb.set_footer(text=f"Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    
+    await interaction.response.send_message(embed=emb, ephemeral=True)
 
 # --- EXECUÇÃO ---
 if __name__ == "__main__":
